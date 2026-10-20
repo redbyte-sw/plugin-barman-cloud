@@ -2,7 +2,7 @@
 # The container needs to provide and build two components:
 # * barman-cloud
 # * instance plugin
-# Both components are built before going into a distroless container
+# Both components are built before going into a minimal Debian container
 
 # Build the manager binary
 # GO_VERSION must be passed as a build arg (read from go.mod by Taskfile)
@@ -58,37 +58,34 @@ RUN python3 -m venv /venv && \
     /venv/bin/pip install --upgrade pip wheel && \
     /venv/bin/pip install --no-cache-dir -r sidecar-requirements.txt
 
-# Download and extract runtime library packages and their dependencies
-# Using apt-cache to automatically resolve dependencies, filtering out packages
-# already present in the distroless base image.
-# Distroless package list from: https://github.com/GoogleContainerTools/distroless/blob/main/base/config.bzl
-# and https://github.com/GoogleContainerTools/distroless/blob/main/python3/config.bzl
-# libselinux1/libpcre2-8-0 are pulled in transitively by python3.13-venv's apt metadata,
-# but the actual distroless base does not ship them, so they are excluded from the
-# "already present" set below to force them to be bundled (tar needs them at runtime).
-RUN mkdir -p /dependencies /build/downloads && \
-    cd /build/downloads && \
-    DISTROLESS_PACKAGES="libc6 libssl3t64 libzstd1 zlib1g libgcc-s1 libstdc++6 \
-        libbz2-1.0 libdb5.3t64 libexpat1 liblzma5 libsqlite3-0 libuuid1 \
-        libncursesw6 libtinfo6 libcom-err2 libcrypt1 libgssapi-krb5-2 \
-        libk5crypto3 libkeyutils1 libkrb5-3 libkrb5support0 libnsl2 \
-        libreadline8t64 libtirpc3t64 libffi8 libpython3.13-minimal \
-        libpython3.13-stdlib python3.13-minimal python3.13-venv" && \
-    apt-cache depends --recurse --no-recommends --no-suggests \
-        --no-conflicts --no-breaks --no-replaces --no-enhances \
-        $DISTROLESS_PACKAGES 2>/dev/null | grep "^\w" | sort -u | \
-        grep -v -x -E 'libselinux1|libpcre2-8-0' > /tmp/distroless.txt && \
-    apt-cache depends --recurse --no-recommends --no-suggests \
-        --no-conflicts --no-breaks --no-replaces --no-enhances \
-        libpq5 liblz4-1 libsnappy1v5 tar 2>/dev/null | grep "^\w" | sort -u | \
-        grep -v -F -x -f /tmp/distroless.txt > /tmp/packages.txt && \
-    apt-get download $(cat /tmp/packages.txt) && \
-    for deb in *.deb; do \
-        dpkg -x "$deb" /dependencies; \
-    done
+# Final sidecar image.
+# NOTE: gcr.io/distroless/python3-debian13 publishes only amd64/arm64/riscv64 --
+# it has no ppc64le manifest, so it cannot be used for a multi-arch build that
+# includes POWER. debian:trixie-slim covers every architecture PGDG ships
+# (amd64, arm64, ppc64le) and provides the same python3.13 the venv was built
+# against, at the cost of a slightly larger image.
+FROM debian:trixie-slim
 
-# Final sidecar image using distroless base for minimal size and fewer packages
-FROM gcr.io/distroless/python3-debian13:nonroot
+# Runtime dependencies of the venv's C extensions. Previously these were
+# apt-downloaded and unpacked into the distroless base by hand; a real Debian
+# base installs them directly and keeps its own dependency resolution.
+#
+# NOTE: libpq5 here comes from Debian (17.x), whereas the pythonbuilder stage
+# compiles psycopg2 against PGDG's libpq-dev (18.x). This is deliberate: it
+# keeps the runtime image free of postgresql-common and its perl dependency
+# chain. All symbols psycopg2 references resolve against libpq.so.5 17.x (it
+# imports cleanly), and a libpq 17 client against an 18 server is a supported
+# combination. To restore exact parity instead, set up the PGDG repo here too.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3 \
+        libpq5 \
+        liblz4-1 \
+        libsnappy1v5 \
+        ca-certificates \
+    && \
+    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false && \
+    rm -rf /var/lib/apt/lists/* /var/cache/* /var/log/*
 
 ENV SUMMARY="CloudNativePG Barman plugin" \
     DESCRIPTION="Container image that provides the barman-cloud sidecar" \
@@ -105,8 +102,6 @@ LABEL summary="$SUMMARY" \
       release="1"
 
 COPY --from=pythonbuilder /venv /venv
-COPY --from=pythonbuilder /dependencies/usr/lib /usr/lib
-COPY --from=pythonbuilder /dependencies/usr/bin/tar /usr/bin/tar
 COPY --from=gobuilder /workspace/manager /manager
 
 # Compile all Python bytecode as root to avoid runtime compilation

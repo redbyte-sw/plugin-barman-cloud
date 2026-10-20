@@ -391,12 +391,12 @@ tasks:
       - >
         GITHUB_REF= dagger call -m github.com/purpleclay/daggerverse/docker@${DAGGER_DOCKER_SHA}
         --registry ghcr.io --username $REGISTRY_USER --password env:REGISTRY_PASSWORD
-        build --dir . --file containers/Dockerfile.plugin --args GO_VERSION={{.GO_VERSION}} --platform linux/amd64 --platform linux/arm64
+        build --dir . --file containers/Dockerfile.plugin --args GO_VERSION={{.GO_VERSION}} --platform linux/amd64 --platform linux/arm64 --platform linux/ppc64le
         publish --ref {{.PLUGIN_IMAGE_NAME}} --tags {{.IMAGE_VERSION}}
       - >
         GITHUB_REF= dagger call -m github.com/purpleclay/daggerverse/docker@${DAGGER_DOCKER_SHA}
         --registry ghcr.io --username $REGISTRY_USER --password env:REGISTRY_PASSWORD
-        build --dir . --file containers/Dockerfile.sidecar --args GO_VERSION={{.GO_VERSION}} --platform linux/amd64 --platform linux/arm64
+        build --dir . --file containers/Dockerfile.sidecar --args GO_VERSION={{.GO_VERSION}} --platform linux/amd64 --platform linux/arm64 --platform linux/ppc64le
         publish --ref {{.SIDECAR_IMAGE_NAME}} --tags {{.IMAGE_VERSION}}
 
   controller-gen:
